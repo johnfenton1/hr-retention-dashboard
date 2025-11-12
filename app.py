@@ -300,21 +300,21 @@ st.plotly_chart(fig_model, use_container_width=True)
 
 st.divider()
 
-# ====================== Driver model: top drivers ======================
+# ====================== Driver model: top drivers (only INCREASE risk) ======================
 
-st.subheader("Top Drivers of Turnover (driver model)")
-# coef_df already sorted by abs coef in build_model
-topn = coef_df.head(15).copy()
-topn["direction"] = np.where(topn["coef"] >= 0, "↑ increases risk", "↓ reduces risk")
+st.subheader("Top Drivers of Turnover (driver model — increases risk only)")
+# Keep only features that increase risk (positive coefficients), then take top 15 by magnitude
+topn = coef_df[coef_df["coef"] > 0].copy()
+topn = topn.sort_values("abs_coef").tail(15)
+
 fig_coef = px.bar(
-    topn.sort_values("abs_coef"),
+    topn,
     x="abs_coef", y="feature", orientation="h",
-    color="direction",
     labels={"abs_coef":"Strength (|coefficient|)", "feature":"Feature"},
-    title="Top 15 drivers by absolute coefficient"
+    title="Top 15 Drivers Increasing Turnover Risk"
 )
 st.plotly_chart(fig_coef, use_container_width=True)
-st.caption("Note: Signs show direction; bar length shows strength. Satisfaction typically has a large negative coefficient → higher satisfaction strongly reduces turnover risk.")
+st.caption("Shown are features with positive coefficients in the driver model (higher values increase predicted turnover risk).")
 
 # ====================== At-risk list ======================
 
@@ -322,7 +322,7 @@ st.subheader("At-Risk Employees (model predictions)")
 df_pred = df.copy()
 df_pred["pred_prob"] = clf.predict_proba(df_pred[num_cols + cat_cols])[:,1]
 
-# NEW: suggested_action column based on slide logic
+# Suggested actions column (rule-based)
 df_pred["suggested_action"] = df_pred.apply(suggested_action_for_row, axis=1)
 
 df_table = apply_filters(df_pred, dept_sel, salary_sel, eval_min, hours_range, tenure_range)
@@ -345,4 +345,5 @@ st.dataframe(
 )
 
 st.caption("Tip: Use sidebar filters (Department, Salary, Evaluation, Hours, Tenure) to focus KPIs, charts, and the at-risk list on specific segments.")
+
 
