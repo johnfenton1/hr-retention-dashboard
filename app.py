@@ -7,7 +7,6 @@
 # Upload hr_data.csv when prompted, or click "Load sample data".
 
 import io
-import os
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -25,7 +24,8 @@ st.set_page_config(page_title="HR Retention Dashboard", layout="wide")
 
 def make_sample_data(n=1000, seed=42):
     rng = np.random.default_rng(seed)
-    departments = ["Sales","Accounting","HR","Technical","Support","IT","Product Management","Marketing","Management","RandD"]
+    departments = ["Sales","Accounting","HR","Technical","Support","IT",
+                   "Product Management","Marketing","Management","RandD"]
     salary = rng.choice(["low","medium","high"], size=n, p=[0.45,0.4,0.15])
     dept = rng.choice(departments, size=n)
     satisfaction = np.clip(rng.normal(0.65, 0.18, size=n), 0, 1)
@@ -36,13 +36,14 @@ def make_sample_data(n=1000, seed=42):
     accident = rng.choice([0,1], size=n, p=[0.95,0.05])
     promo5 = rng.choice([0,1], size=n, p=[0.96,0.04])
 
+    # Base log-odds
     logit = (
-        -3.0*(satisfaction-0.65)
-        + 0.45*(hours-200)/25
-        + 0.35*(tenure-4.0)
-        + 0.20*(projects-4)
-        - 0.6*promo5
-        - 0.2*accident
+        -3.0*(satisfaction-0.65)                  # satisfaction protective
+        + 0.45*(hours-200)/25                     # workload risk
+        + 0.35*(tenure-4.0)                       # stagnation with tenure
+        + 0.20*(projects-4)                       # more projects more risk
+        - 0.6*promo5                              # promotion protects
+        - 0.2*accident                            # post-incident attention
     )
     logit += np.where(salary=="low", 1.1, 0)
     logit += np.where(salary=="medium", 0.6, 0)
@@ -101,13 +102,16 @@ def build_model(df: pd.DataFrame):
         ("num", StandardScaler(), num),
         ("cat", OneHotEncoder(drop="first", handle_unknown="ignore"), cat)
     ])
-    clf = Pipeline([("prep", preproc),
-                    ("model", LogisticRegression(max_iter=1000, class_weight="balanced"))])
+    clf = Pipeline([
+        ("prep", preproc),
+        ("model", LogisticRegression(max_iter=1000, class_weight="balanced"))
+    ])
 
     Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.25, stratify=y, random_state=42)
     clf.fit(Xtr, ytr)
     auc = roc_auc_score(yte, clf.predict_proba(Xte)[:,1])
 
+    # Coefficients (standardized space)
     ohe = clf.named_steps["prep"].named_transformers_["cat"]
     cat_names = ohe.get_feature_names_out(cat)
     feat_names = np.concatenate([num, cat_names])
@@ -134,8 +138,12 @@ def kpi_card(col, label, value):
     else:
         col.metric(label, f"{value:.1%}")
 
-# ===== Suggested Action rules (from slide) =====
+# ===== Suggested Action rules (from the cross-sectional analysis slide) =====
 def suggested_action_for_row(r) -> str:
+    """
+    Rules used to generate Suggested Action per employee.
+    If multiple rules trigger, actions are joined with ' | '. If none, returns '—'.
+    """
     actions = []
 
     # Thresholds aligned with dashboard signals
@@ -144,7 +152,9 @@ def suggested_action_for_row(r) -> str:
     LOW_SAT    = 0.60         # low satisfaction
 
     # 1) 4–5 yrs tenure + heavy workload + no promotion
-    if (4.0 <= r["time_spend_company"] <= 5.0) and (r["average_montly_hours"] >= HIGH_HOURS) and (r["promotion_last_5years"] == 0):
+    if (4.0 <= r["time_spend_company"] <= 5.0) and \
+       (r["average_montly_hours"] >= HIGH_HOURS) and \
+       (r["promotion_last_5years"] == 0):
         actions.append("Targeted career pathing and promotion reviews at the 3–4 year mark.")
 
     # 2) Low/medium salary + high hours
@@ -190,9 +200,13 @@ with st.sidebar:
     salary_sel = st.selectbox("Salary", ["All","low","medium","high"], index=0)
     eval_min = st.slider("Minimum Evaluation", 0.0, 1.0, 0.0, 0.05)
     hours_min, hours_max = int(df["average_montly_hours"].min()), int(df["average_montly_hours"].max())
-    hours_range = st.slider("Monthly Hours Range", hours_min, hours_max, (max(90, hours_min), min(310, hours_max)), 5)
+    hours_range = st.slider("Monthly Hours Range",
+                            hours_min, hours_max,
+                            (max(90, hours_min), min(310, hours_max)), 5)
     tenure_min, tenure_max = int(max(1, df["time_spend_company"].min())), int(df["time_spend_company"].max())
-    tenure_range = st.slider("Tenure Range (years)", tenure_min, max(tenure_max, tenure_min+1), (min(1, tenure_min), min(7, tenure_max)), 1)
+    tenure_range = st.slider("Tenure Range (years)",
+                             tenure_min, max(tenure_max, tenure_min+1),
+                             (min(1, tenure_min), min(7, tenure_max)), 1)
     model_salary = st.selectbox("Model Salary (risk heatmap)", ["low","medium","high"], index=1)
 
 # ====================== Model ======================
@@ -218,6 +232,7 @@ st.divider()
 if len(sub) == 0:
     st.warning("No data matches the current filters.")
 else:
+    # Turnover heatmap: Hours × Tenure
     heat = sub.pivot_table(index="hours_band", columns="tenure_band", values="left", aggfunc="mean")
     heat = heat.reindex(index=["<150","150–179","180–209","210–239","240+"],
                         columns=["0–1","1–3","3–5","5+"])
@@ -229,6 +244,7 @@ else:
     )
     st.plotly_chart(fig_heat, use_container_width=True)
 
+    # Department turnover bar
     dept_turn = sub.groupby("Department")["left"].mean().sort_values(ascending=False).reset_index()
     fig_bar = px.bar(
         dept_turn, x="Department", y="left", text="left",
@@ -238,6 +254,7 @@ else:
     fig_bar.update_traces(texttemplate="%{text:.2f}", textposition="outside", cliponaxis=False)
     st.plotly_chart(fig_bar, use_container_width=True)
 
+    # Evaluation band turnover (U-shape)
     bins = [0,0.5,0.6,0.7,0.8,0.9,1.0]
     labels = ['≤0.5','0.5–0.6','0.6–0.7','0.7–0.8','0.8–0.9','0.9–1.0']
     sub_eval = sub.copy()
@@ -255,11 +272,13 @@ st.divider()
 
 # ====================== Model-based risk heatmap (Tenure × Hours) ======================
 
+# Create a prediction grid with median values for other features
 tenure_vals = [0.5, 2, 4, 6]
 hours_vals  = [150, 180, 210, 240]
 dept_mode   = df["Department"].mode()[0]
 med         = df[["satisfaction_level","last_evaluation","number_project",
-                  "average_montly_hours","time_spend_company","Work_accident","promotion_last_5years"]].median()
+                  "average_montly_hours","time_spend_company",
+                  "Work_accident","promotion_last_5years"]].median()
 
 grid = []
 for t in tenure_vals:
@@ -303,7 +322,6 @@ st.divider()
 # ====================== Driver model: top drivers ======================
 
 st.subheader("Top Drivers of Turnover (driver model)")
-# coef_df already sorted by abs coef in build_model
 topn = coef_df.head(15).copy()
 topn["direction"] = np.where(topn["coef"] >= 0, "↑ increases risk", "↓ reduces risk")
 fig_coef = px.bar(
@@ -322,7 +340,7 @@ st.subheader("At-Risk Employees (model predictions)")
 df_pred = df.copy()
 df_pred["pred_prob"] = clf.predict_proba(df_pred[num_cols + cat_cols])[:,1]
 
-# NEW: suggested_action column based on slide logic
+# Suggested actions column (rule-based)
 df_pred["suggested_action"] = df_pred.apply(suggested_action_for_row, axis=1)
 
 df_table = apply_filters(df_pred, dept_sel, salary_sel, eval_min, hours_range, tenure_range)
@@ -344,5 +362,99 @@ st.dataframe(
     use_container_width=True
 )
 
+# ====================== Department-specific Suggested Actions ======================
+
+st.divider()
+st.subheader("Suggested Actions by Department")
+
+# Use the same top-N filtered view shown above
+topN_df = (
+    df_table.sort_values("pred_prob", ascending=False)
+            .head(N)
+            .copy()
+)
+
+# Split the joined actions and explode (skip rows with no action "—")
+topN_df["action_list"] = topN_df["suggested_action"].str.split(" | ")
+topN_df_exploded = topN_df.explode("action_list")
+topN_df_exploded = topN_df_exploded[
+    topN_df_exploded["action_list"].notna() & (topN_df_exploded["action_list"] != "—")
+]
+
+# Summary: per-department action counts + share of dept at-risk list
+dept_totals = topN_df.groupby("Department").size().rename("dept_topN_count")
+summary = (
+    topN_df_exploded
+        .groupby(["Department", "action_list"])
+        .size()
+        .rename("employees")
+        .reset_index()
+        .merge(dept_totals, on="Department", how="left")
+)
+summary["share_of_dept_topN"] = summary["employees"] / summary["dept_topN_count"]
+
+# Wide pivot: where actions concentrate
+pivot_actions = summary.pivot_table(
+    index="Department",
+    columns="action_list",
+    values="employees",
+    aggfunc="sum",
+    fill_value=0
+).sort_index()
+
+st.caption("Counts of suggested actions among the current Top-N at-risk employees (after filters).")
+st.dataframe(pivot_actions, use_container_width=True)
+
+# Downloads
+st.download_button(
+    "Download department action counts (CSV)",
+    data=pivot_actions.to_csv(index=True).encode("utf-8"),
+    file_name="department_action_counts.csv",
+    mime="text/csv",
+)
+
+st.download_button(
+    "Download top-N at-risk with suggested actions (CSV)",
+    data=topN_df[[
+        "Department","salary","satisfaction_level","last_evaluation","number_project",
+        "average_montly_hours","time_spend_company","promotion_last_5years",
+        "pred_prob","left","suggested_action"
+    ]].to_csv(index=False).encode("utf-8"),
+    file_name="topN_at_risk_with_actions.csv",
+    mime="text/csv",
+)
+
+# Optional: department drill-down tables
+st.markdown("### Drill-down by Department")
+depts_pick = st.multiselect(
+    "Choose departments to inspect",
+    options=sorted(topN_df["Department"].unique().tolist()),
+    default=sorted(topN_df["Department"].unique().tolist())[:3]
+)
+
+for d in depts_pick:
+    with st.expander(f"{d} — at-risk employees & suggested actions"):
+        view = (
+            topN_df[topN_df["Department"] == d]
+            .sort_values("pred_prob", ascending=False)
+            [[
+                "salary","satisfaction_level","last_evaluation","number_project",
+                "average_montly_hours","time_spend_company","promotion_last_5years",
+                "pred_prob","suggested_action"
+            ]]
+            .rename(columns={"pred_prob":"predicted_risk"})
+        )
+        st.dataframe(
+            view.style.format({
+                "satisfaction_level":"{:.2f}",
+                "last_evaluation":"{:.2f}",
+                "average_montly_hours":"{:.0f}",
+                "time_spend_company":"{:.1f}",
+                "predicted_risk":"{:.2%}"
+            }),
+            use_container_width=True
+        )
+
 st.caption("Tip: Use sidebar filters (Department, Salary, Evaluation, Hours, Tenure) to focus KPIs, charts, and the at-risk list on specific segments.")
+
 
