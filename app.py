@@ -134,32 +134,73 @@ def kpi_card(col, label, value):
     else:
         col.metric(label, f"{value:.1%}")
 
-# ===== Suggested Action rules (from slide) =====
+# ===== Suggested Action rules (ONE action per person; guaranteed non-empty) =====
 def suggested_action_for_row(r) -> str:
-    actions = []
+    """
+    Returns exactly ONE suggested action per employee.
+    Priority:
+      1) Primary rules from slide
+      2) Secondary heuristics
+      3) Department-specific nudge
+      4) Fallback by predicted-risk tier (pred_prob), then safe default
+    """
+    HIGH_HOURS = 210
+    HIGH_PERF  = 0.80
+    LOW_SAT    = 0.60
 
-    # Thresholds aligned with dashboard signals
-    HIGH_HOURS = 210          # burnout signal in KPIs
-    HIGH_PERF  = 0.80         # high performer cutoff used above
-    LOW_SAT    = 0.60         # low satisfaction
-
-    # 1) 4–5 yrs tenure + heavy workload + no promotion
+    # ---------- Primary rules ----------
     if (4.0 <= r["time_spend_company"] <= 5.0) and (r["average_montly_hours"] >= HIGH_HOURS) and (r["promotion_last_5years"] == 0):
-        actions.append("Targeted career pathing and promotion reviews at the 3–4 year mark.")
-
-    # 2) Low/medium salary + high hours
-    if (r["salary"] in {"low","medium"}) and (r["average_montly_hours"] >= HIGH_HOURS):
-        actions.append("Compensation adjustments or workload limits.")
-
-    # 3) High performers with low satisfaction
+        return "Targeted career pathing and promotion reviews at the 3–4 year mark."
     if (r["last_evaluation"] >= HIGH_PERF) and (r["satisfaction_level"] <= LOW_SAT):
-        actions.append("Fast-track rewards, mentorship, and leadership opportunities.")
-
-    # 4) Technical/IT low-salary staff
+        return "Fast-track rewards, mentorship, and leadership opportunities."
+    if (r["salary"] in {"low","medium"}) and (r["average_montly_hours"] >= HIGH_HOURS):
+        return "Compensation adjustments or workload limits."
     if (r["Department"] in {"Technical","IT"}) and (r["salary"] == "low"):
-        actions.append("Market-aligned pay and retention bonuses.")
+        return "Market-aligned pay and retention bonuses."
 
-    return " | ".join(actions) if actions else "—"
+    # ---------- Secondary heuristics ----------
+    if r["average_montly_hours"] >= HIGH_HOURS:
+        return "Cap workload to ≤200h/mo via headcount/automation and task reprioritization."
+    if r["satisfaction_level"] < LOW_SAT:
+        return "Manager 1:1 within 2 weeks; recognition plan and mentorship pairing."
+    if (r["time_spend_company"] >= 3) and (r["promotion_last_5years"] == 0):
+        return "Career planning and internal mobility slate within 60 days."
+    if r["salary"] == "low":
+        return "Compensation review to market P50 with retention bonus eligibility."
+    if (r["last_evaluation"] < 0.60) and (r["average_montly_hours"] >= 180):
+        return "Targeted training/coaching and immediate workload rebalance."
+
+    # ---------- Department-specific nudge ----------
+    dept_nudge = {
+        "Technical": "Retention bonus window and L5 growth ladder; conference/cert budget.",
+        "IT": "Market pay alignment and certification stipend; on-call rotation review.",
+        "Support": "Schedule flexibility and rotation off high-churn queues.",
+        "Sales": "Territory/quota realignment and SPIFF for near-term pipeline.",
+        "Marketing": "Clear campaign ownership and recognition for impact wins.",
+        "HR": "Cross-functional project placement and strategic initiative exposure.",
+        "Accounting": "Month-end close coverage support and role enrichment.",
+        "Management": "Executive coaching and resourcing for team capacity gaps.",
+        "Product Management": "Roadmap ownership increase and discovery time allocation.",
+        "RandD": "Publication/patent support and dedicated lab resources."
+    }
+    d = r.get("Department")
+    if d in dept_nudge:
+        return dept_nudge[d]
+
+    # ---------- Fallback on predicted risk ----------
+    try:
+        p = float(r.get("pred_prob", np.nan))
+    except Exception:
+        p = np.nan
+
+    if not np.isnan(p):
+        if p >= 0.60:
+            return "Immediate retention plan: skip-level check-in, comp review, and workload cap."
+        if p >= 0.40:
+            return "Mentorship and 30-day pulse checks; rebalance workload and set growth goals."
+        return "Maintain normal cadence with quarterly pulse and ongoing recognition."
+    else:
+        return "Manager check-in in 2 weeks with action plan on workload, recognition, and growth."
 
 # ====================== UI: Data load ======================
 
@@ -322,7 +363,7 @@ st.subheader("At-Risk Employees (model predictions)")
 df_pred = df.copy()
 df_pred["pred_prob"] = clf.predict_proba(df_pred[num_cols + cat_cols])[:,1]
 
-# Suggested actions column (rule-based)
+# ONE-action suggested_action column
 df_pred["suggested_action"] = df_pred.apply(suggested_action_for_row, axis=1)
 
 df_table = apply_filters(df_pred, dept_sel, salary_sel, eval_min, hours_range, tenure_range)
